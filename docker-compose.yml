@@ -1,0 +1,40 @@
+services:
+  # ── Terminal CLI dashboard ──────────────────────────────────────────────────
+  cli:
+    build: .
+    image: signalscope:latest
+    profiles: [cli]
+    # Share the host's /proc and /sys so psutil can see real processes
+    pid: host
+    network_mode: host
+    privileged: true
+    stdin_open: true
+    tty: true
+    environment:
+      SIGNALSCOPE_MODE: cli
+      SIGNALSCOPE_INTERVAL: "${SIGNALSCOPE_INTERVAL:-2.0}"
+      SIGNALSCOPE_TOP: "${SIGNALSCOPE_TOP:-}"
+      SIGNALSCOPE_CPU_THRESHOLD: "${SIGNALSCOPE_CPU_THRESHOLD:-50.0}"
+      SIGNALSCOPE_MEM_THRESHOLD: "${SIGNALSCOPE_MEM_THRESHOLD:-10.0}"
+      SIGNALSCOPE_NO_DAEMON: "${SIGNALSCOPE_NO_DAEMON:-false}"
+      SIGNALSCOPE_LOG_LEVEL: "${SIGNALSCOPE_LOG_LEVEL:-WARNING}"
+
+  # ── Web dashboard ──────────────────────────────────────────────────────────
+  web:
+    build: .
+    image: signalscope:latest
+    profiles: [web]
+    pid: host
+    privileged: true
+    ports:
+      - "${SIGNALSCOPE_WEB_PORT:-8000}:8000"
+    environment:
+      SIGNALSCOPE_MODE: web
+      SIGNALSCOPE_INTERVAL: "${SIGNALSCOPE_INTERVAL:-2.0}"
+      SIGNALSCOPE_TOP: "${SIGNALSCOPE_TOP:-}"
+      SIGNALSCOPE_CPU_THRESHOLD: "${SIGNALSCOPE_CPU_THRESHOLD:-50.0}"
+      SIGNALSCOPE_MEM_THRESHOLD: "${SIGNALSCOPE_MEM_THRESHOLD:-10.0}"
+      SIGNALSCOPE_NO_DAEMON: "${SIGNALSCOPE_NO_DAEMON:-false}"
+      SIGNALSCOPE_LOG_LEVEL: "${SIGNALSCOPE_LOG_LEVEL:-WARNING}"
+      SIGNALSCOPE_WEB_HOST: "0.0.0.0"
+      SIGNALSCOPE_WEB_PORT: "8000"
