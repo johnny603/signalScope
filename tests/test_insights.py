@@ -48,7 +48,14 @@ class TestAnomalyDetector:
     def test_annotates_high_cpu(self):
         proc = make_proc(cpu_percent=90.0)
         AnomalyDetector(cpu_threshold=50.0).analyze([proc])
-        assert AnomalyDetector.INSIGHT in proc.insights
+        assert any(AnomalyDetector.INSIGHT_PREFIX in i for i in proc.insights)
+
+    def test_insight_includes_cpu_and_threshold(self):
+        proc = make_proc(cpu_percent=78.5)
+        AnomalyDetector(cpu_threshold=50.0).analyze([proc])
+        assert len(proc.insights) == 1
+        assert "78.5%" in proc.insights[0]
+        assert "50%" in proc.insights[0]
 
     def test_ignores_normal_cpu(self):
         proc = make_proc(cpu_percent=20.0)
@@ -59,11 +66,11 @@ class TestAnomalyDetector:
         proc = make_proc(cpu_percent=30.0)
         # Threshold lower than cpu_percent → should flag
         AnomalyDetector(cpu_threshold=25.0).analyze([proc])
-        assert AnomalyDetector.INSIGHT in proc.insights
+        assert any(AnomalyDetector.INSIGHT_PREFIX in i for i in proc.insights)
 
     def test_no_duplicate_insight(self):
         proc = make_proc(cpu_percent=99.0)
         detector = AnomalyDetector(cpu_threshold=50.0)
         detector.analyze([proc])
         detector.analyze([proc])
-        assert proc.insights.count(AnomalyDetector.INSIGHT) == 1
+        assert len(proc.insights) == 1

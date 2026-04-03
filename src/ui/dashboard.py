@@ -4,6 +4,7 @@ import logging
 import time
 from typing import Callable, List, Optional
 
+import psutil
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
@@ -13,23 +14,48 @@ from src.models.process import ProcessInfo
 
 logger = logging.getLogger(__name__)
 
-# CPU % above this value is highlighted red.
+# CPU % above this value is highlighted yellow; zombie rows are bold red.
 HIGH_CPU_THRESHOLD = 50.0
+# CPU % below this value gets a dim style to reduce visual noise.
+DIM_CPU_THRESHOLD = 0.1
 
 
 def _row_style(proc: ProcessInfo) -> str:
-    """Return the Rich style string for a process row."""
+    """Return the Rich style string for a process row.
+
+    Only anomalies receive a colour; idle processes are dimmed; normal
+    processes carry no style so they blend into the terminal's default look.
+    """
     if proc.is_zombie():
         return "bold red"
     if proc.is_high_cpu(HIGH_CPU_THRESHOLD):
         return "yellow"
-    return "green"
+    if proc.cpu_percent < DIM_CPU_THRESHOLD:
+        return "dim"
+    return ""
+
+
+def _system_summary() -> str:
+    """Return a one-line string with overall CPU and memory usage."""
+    try:
+        cpu = psutil.cpu_percent(interval=None)
+        mem = psutil.virtual_memory()
+        return (
+            f"System  CPU: {cpu:.1f}%  |  "
+            f"RAM: {mem.percent:.1f}% used ({mem.used // (1024 ** 2):,} / {mem.total // (1024 ** 2):,} MB)"
+        )
+    except Exception:
+        return ""
 
 
 def build_table(processes: List[ProcessInfo], title: str = "SignalScope — Process Monitor") -> Table:
     """Build and return a Rich :class:`Table` from a list of processes."""
+    summary = _system_summary()
+    full_title = f"{title}\n[dim]{summary}[/dim]" if summary else title
+
     table = Table(
-        title=title,
+        title=full_title,
+        caption="[dim]Press Ctrl+C to exit[/dim]",
         box=box.ROUNDED,
         show_header=True,
         header_style="bold cyan",
@@ -38,7 +64,7 @@ def build_table(processes: List[ProcessInfo], title: str = "SignalScope — Proc
 
     table.add_column("PID", style="dim", width=8, justify="right")
     table.add_column("Name", min_width=16)
-    table.add_column("CPU %", width=8, justify="right")
+    table.add_column("CPU % ↓", width=9, justify="right")
     table.add_column("Mem %", width=8, justify="right")
     table.add_column("Status", width=12)
     table.add_column("Insight", min_width=20)
@@ -110,3 +136,4 @@ class Dashboard:
                     break
 
         logger.info("Dashboard stopped.")
+

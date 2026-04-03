@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class ZombieDetector:
     """Identifies processes whose status is 'zombie'."""
 
-    INSIGHT = "⚠ Zombie process"
+    INSIGHT = "👻 Zombie: Process finished but parent has not called wait()"
 
     def analyze(self, processes: List[ProcessInfo]) -> None:
         """Annotate zombie processes in-place."""

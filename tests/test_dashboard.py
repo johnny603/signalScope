@@ -26,9 +26,13 @@ class TestRowStyle:
         proc = make_proc(cpu_percent=80.0)
         assert _row_style(proc) == "yellow"
 
-    def test_normal_is_green(self):
+    def test_normal_has_no_style(self):
         proc = make_proc(cpu_percent=5.0)
-        assert _row_style(proc) == "green"
+        assert _row_style(proc) == ""
+
+    def test_idle_is_dim(self):
+        proc = make_proc(cpu_percent=0.0)
+        assert _row_style(proc) == "dim"
 
     def test_zombie_takes_priority_over_high_cpu(self):
         proc = make_proc(status="zombie", cpu_percent=99.0)
@@ -41,7 +45,7 @@ class TestBuildTable:
         col_names = [col.header for col in table.columns]
         assert "PID" in col_names
         assert "Name" in col_names
-        assert "CPU %" in col_names
+        assert "CPU % ↓" in col_names
         assert "Mem %" in col_names
         assert "Status" in col_names
         assert "Insight" in col_names
