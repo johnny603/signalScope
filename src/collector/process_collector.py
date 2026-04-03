@@ -1,7 +1,7 @@
 """Collects live process data using psutil."""
 
 import logging
-from typing import List
+from typing import List, Optional
 
 import psutil
 
@@ -14,7 +14,16 @@ class ProcessCollector:
     """Gathers a snapshot of all running processes via psutil."""
 
     #: Fields requested from psutil for efficiency
-    _ATTRS = ["pid", "name", "cpu_percent", "memory_percent", "status", "ppid"]
+    _ATTRS = ["pid", "name", "cpu_percent", "memory_percent", "status", "ppid", "username"]
+
+    def __init__(self, user: Optional[str] = None) -> None:
+        """
+        Parameters
+        ----------
+        user:
+            If set, only processes owned by this username are returned.
+        """
+        self.user = user
 
     def collect(self) -> List[ProcessInfo]:
         """Return a list of :class:`ProcessInfo` for every accessible process.
@@ -34,6 +43,8 @@ class ProcessCollector:
         for proc in procs:
             try:
                 info = proc.info  # type: ignore[attr-defined]
+                if self.user is not None and info.get("username") != self.user:
+                    continue
                 processes.append(
                     ProcessInfo(
                         pid=info["pid"],

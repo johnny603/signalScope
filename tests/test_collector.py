@@ -7,7 +7,7 @@ import pytest
 from src.collector.process_collector import ProcessCollector
 
 
-def _make_mock_proc(pid, name, cpu_percent, memory_percent, status, ppid=1):
+def _make_mock_proc(pid, name, cpu_percent, memory_percent, status, ppid=1, username="root"):
     proc = MagicMock()
     proc.info = {
         "pid": pid,
@@ -16,6 +16,7 @@ def _make_mock_proc(pid, name, cpu_percent, memory_percent, status, ppid=1):
         "memory_percent": memory_percent,
         "status": status,
         "ppid": ppid,
+        "username": username,
     }
     return proc
 
@@ -56,3 +57,27 @@ class TestProcessCollector:
             collector = ProcessCollector()
             result = collector.collect()
         assert result == []
+
+    def test_user_filter_returns_only_matching_user(self):
+        mock_procs = [
+            _make_mock_proc(1, "init", 0.0, 0.1, "sleeping", username="root"),
+            _make_mock_proc(2, "myapp", 5.0, 1.0, "running", username="alice"),
+            _make_mock_proc(3, "other", 1.0, 0.5, "sleeping", username="bob"),
+        ]
+        with patch("src.collector.process_collector.psutil.process_iter", return_value=mock_procs):
+            collector = ProcessCollector(user="alice")
+            result = collector.collect()
+
+        assert len(result) == 1
+        assert result[0].pid == 2
+
+    def test_user_filter_none_returns_all(self):
+        mock_procs = [
+            _make_mock_proc(1, "init", 0.0, 0.1, "sleeping", username="root"),
+            _make_mock_proc(2, "myapp", 5.0, 1.0, "running", username="alice"),
+        ]
+        with patch("src.collector.process_collector.psutil.process_iter", return_value=mock_procs):
+            collector = ProcessCollector(user=None)
+            result = collector.collect()
+
+        assert len(result) == 2
