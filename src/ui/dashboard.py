@@ -30,6 +30,8 @@ def _row_style(proc: ProcessInfo) -> str:
         return "bold red"
     if proc.is_high_cpu(HIGH_CPU_THRESHOLD):
         return "yellow"
+    if any("🧠 High Memory" in i for i in proc.insights):
+        return "magenta"
     if proc.cpu_percent < DIM_CPU_THRESHOLD:
         return "dim"
     return ""
@@ -48,10 +50,38 @@ def _system_summary() -> str:
         return ""
 
 
+def _anomaly_summary(processes: List[ProcessInfo]) -> str:
+    """Return a compact count of notable process categories."""
+    total = len(processes)
+    zombies = sum(1 for p in processes if p.is_zombie())
+    high_cpu = sum(1 for p in processes if any("🔥" in i for i in p.insights))
+    high_mem = sum(1 for p in processes if any("🧠" in i for i in p.insights))
+    trends = sum(1 for p in processes if any("📈" in i for i in p.insights))
+
+    parts = [f"Processes: {total}"]
+    if zombies:
+        parts.append(f"👻 Zombies: {zombies}")
+    if high_cpu:
+        parts.append(f"🔥 High CPU: {high_cpu}")
+    if high_mem:
+        parts.append(f"🧠 High Mem: {high_mem}")
+    if trends:
+        parts.append(f"📈 Trends: {trends}")
+    return "  |  ".join(parts)
+
+
 def build_table(processes: List[ProcessInfo], title: str = "SignalScope — Process Monitor") -> Table:
     """Build and return a Rich :class:`Table` from a list of processes."""
     summary = _system_summary()
-    full_title = f"{title}\n[dim]{summary}[/dim]" if summary else title
+    anomaly_line = _anomaly_summary(processes)
+    subtitle_parts = []
+    if summary:
+        subtitle_parts.append(summary)
+    if anomaly_line:
+        subtitle_parts.append(anomaly_line)
+    full_title = title
+    if subtitle_parts:
+        full_title = title + "\n" + "  |  ".join(f"[dim]{p}[/dim]" for p in subtitle_parts)
 
     table = Table(
         title=full_title,
@@ -136,4 +166,5 @@ class Dashboard:
                     break
 
         logger.info("Dashboard stopped.")
+
 
