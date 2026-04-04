@@ -8,6 +8,26 @@ It ships as both a **beautiful terminal (CLI) dashboard** and an optional **brow
 
 ---
 
+## Why signalScope?
+Any application running on a server — whether a cloud VM, a local machine, or a container — accumulates processes over time. These processes don't announce when they go wrong. They silently degrade your system until something breaks. Here's why that matters.
+
+Zombie processes:
+A zombie is a process that has finished executing but whose parent never collected its exit code. They seem harmless — using almost no CPU or memory — but they hold slots in the OS process table. Linux has a hard limit of ~32,768 processes. Accumulate enough zombies and your system can no longer spawn new processes: no new logins, no new server threads, nothing.
+
+Undetected memory leaks:
+A process that grabs a little more memory each hour is harmless for a day. Left for weeks, it slowly exhausts available RAM. Once RAM is full and swap is consumed, the kernel's OOM Killer begins terminating processes — often critical services — seemingly at random, with no warning other than a gradual slowdown nobody caught.
+
+CPU spike trends:
+A one-time CPU spike is noise. A process that spikes repeatedly across cycles is entering a runaway loop. Most monitors only see the snapshot — not the pattern. Without trend tracking, a process stuck in an infinite loop can peg a CPU core at 100% indefinitely, starving every other process of compute time until the system becomes unresponsive.
+
+Daemon accumulation:
+Background services that crash and auto-restart can silently multiply over time. Each new instance may hold open file descriptors or leak memory. Linux enforces a per-process and system-wide file descriptor limit — when it's hit, applications begin throwing cryptic errors like "too many open files," a problem that is invisible until it's already impacting users.
+
+Silent, slow failure:
+The OS does not clean these up for you. Its job is to run processes, not judge whether they should still be running. Without active monitoring, systems can degrade for weeks while appearing healthy — no crash, no alert, no obvious signal — until a cascading failure takes down something critical at the worst possible moment.
+
+This is where SignalScope comes in. We surface these signals before they become failures — with real-time zombie detection, memory anomaly flagging, CPU trend tracking, and daemon identification. No complex setup. No enterprise pricing. Just the intelligence your system already needs.
+
 ## ✨ Features
 
 | Feature | Description |
