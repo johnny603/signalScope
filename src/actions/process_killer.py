@@ -5,10 +5,13 @@ import logging
 import os
 import signal
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import psutil
+
+# Uptime threshold (seconds) used to classify a no-tty process as high-risk.
+HIGH_RISK_UPTIME_THRESHOLD = 3600
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -164,7 +167,7 @@ class ProcessKiller:
                 return True
             terminal = proc.terminal()
             create_time = proc.create_time()
-            if terminal is None and (time.time() - create_time) > 3600:
+            if terminal is None and (time.time() - create_time) > HIGH_RISK_UPTIME_THRESHOLD:
                 return True
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass

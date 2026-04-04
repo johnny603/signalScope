@@ -26,7 +26,6 @@ import json
 import logging
 import os
 import sys
-import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -604,15 +603,9 @@ async def process_info(pid: int):
     try:
         p = psutil.Process(pid)
         info = p.as_dict(attrs=["pid", "name", "cpu_percent", "memory_percent",
-                                 "status", "ppid", "uids", "terminal", "create_time"])
+                                 "status", "ppid"])
         is_zombie = info.get("status") == "zombie"
-        # High-risk heuristic (mirrors ProcessKiller._is_high_risk)
-        high_risk = False
-        uids = info.get("uids")
-        if uids and uids.real == 0:
-            high_risk = True
-        elif not info.get("terminal") and (time.time() - (info.get("create_time") or time.time())) > 3600:
-            high_risk = True
+        high_risk = ProcessKiller._is_high_risk(p)
         return {
             "pid": info.get("pid"),
             "name": info.get("name", ""),

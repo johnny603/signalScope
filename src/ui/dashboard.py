@@ -12,6 +12,7 @@ from rich.table import Table
 from rich import box
 
 from src.models.process import ProcessInfo
+from src.actions.process_killer import ProcessKiller
 
 logger = logging.getLogger(__name__)
 
@@ -194,8 +195,6 @@ class Dashboard:
 
     def _handle_kill_prompt(self) -> None:
         """Interactive kill prompt invoked when the user presses 'k'."""
-        from src.actions.process_killer import ProcessKiller
-
         killer = ProcessKiller()
         pid_str = self._console.input("[bold]Enter PID to signal:[/bold] ").strip()
         try:
@@ -207,7 +206,7 @@ class Dashboard:
 
         try:
             p = psutil.Process(pid)
-            info = p.as_dict(attrs=["name", "status", "ppid", "uids", "terminal", "create_time"])
+            info = p.as_dict(attrs=["name", "status", "ppid"])
         except psutil.NoSuchProcess:
             self._console.print(f"[red]PID {pid} not found[/red]")
             self._console.input("[dim]Press Enter to continue…[/dim]")
@@ -220,12 +219,7 @@ class Dashboard:
             self._console.input("[dim]Press Enter to continue…[/dim]")
             return
 
-        high_risk = False
-        uids = info.get("uids")
-        if uids and uids.real == 0:
-            high_risk = True
-        elif not info.get("terminal") and (time.time() - (info.get("create_time") or time.time())) > 3600:
-            high_risk = True
+        high_risk = ProcessKiller._is_high_risk(p)
 
         if high_risk:
             self._console.print(
