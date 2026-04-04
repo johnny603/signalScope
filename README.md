@@ -6,6 +6,8 @@ SignalScope is a lightweight, Python-based tool that monitors system processes i
 
 It ships as both a **beautiful terminal (CLI) dashboard** and an optional **browser-based web dashboard**, and can be run directly with Python or as a **Docker container** on any platform — no Python setup required.
 
+**New in this release:** process kill / signal actions, SQLite metrics persistence, Slack/webhook notifications, web dashboard authentication, and multi-host agent mode.
+
 ---
 
 ## Why signalScope?
@@ -45,6 +47,11 @@ This is where SignalScope comes in. We surface these signals before they become 
 | **User filter** | Limits monitoring to processes owned by a specific username |
 | **Docker ready** | Single-command Docker run; configurable via environment variables |
 | **Cross-platform** | Works on Linux, macOS, and Windows (CLI) |
+| **Process kill / signal** ⚡ | Send SIGTERM or SIGKILL to processes from web UI or CLI (press `k`) |
+| **Metrics persistence** 🗄️ | SQLite time-series storage; query history, anomalies, top offenders |
+| **Slack / Webhook alerts** 🔔 | Push anomaly events to Slack or any HTTP endpoint with cooldown dedup |
+| **Web auth** 🔒 | HTTP Basic Auth with auto-generated password; timing-safe comparison |
+| **Multi-host agent mode** 🌐 | `--mode agent` posts snapshots to a central `--mode collector` server |
 
 ---
 
@@ -142,17 +149,26 @@ All CLI flags are available as `SIGNALSCOPE_*` environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `SIGNALSCOPE_MODE` | `cli` | `cli` = terminal dashboard, `web` = browser dashboard |
+| `SIGNALSCOPE_MODE` | `cli` | `cli`/`dashboard` = terminal, `web` = web server, `agent` = push to collector, `collector` = receive from agents |
 | `SIGNALSCOPE_INTERVAL` | `2.0` | Refresh interval in seconds |
 | `SIGNALSCOPE_TOP` | *(all)* | Show only top-N processes by CPU usage |
 | `SIGNALSCOPE_CPU_THRESHOLD` | `50.0` | CPU % above which a process is flagged |
 | `SIGNALSCOPE_MEM_THRESHOLD` | `10.0` | Memory % above which a process is flagged |
 | `SIGNALSCOPE_NO_DAEMON` | `false` | Set `true` to disable daemon detection |
 | `SIGNALSCOPE_USER` | *(all)* | Restrict to processes owned by this user |
-| `SIGNALSCOPE_ALERT_LOG` | *(none)* | Path inside container to write alert events |
+| `SIGNALSCOPE_ALERT_LOG` | *(none)* | Path to write alert events |
 | `SIGNALSCOPE_LOG_LEVEL` | `WARNING` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `SIGNALSCOPE_WEB_HOST` | `0.0.0.0` | Bind address for the web server |
 | `SIGNALSCOPE_WEB_PORT` | `8000` | Port for the web server |
+| `SIGNALSCOPE_DB_PATH` | `~/.signalscope/metrics.db` | SQLite database path |
+| `SIGNALSCOPE_SLACK_WEBHOOK_URL` | *(none)* | Slack Incoming Webhook URL |
+| `SIGNALSCOPE_WEBHOOK_URL` | *(none)* | Generic webhook URL |
+| `SIGNALSCOPE_NOTIFY_COOLDOWN` | `300` | Notification cooldown in seconds |
+| `SIGNALSCOPE_WEB_USER` | `admin` | Web dashboard username |
+| `SIGNALSCOPE_WEB_PASSWORD` | *(auto-generated)* | Web dashboard password |
+| `SIGNALSCOPE_NO_AUTH` | `false` | Set `true` to disable web auth |
+| `SIGNALSCOPE_COLLECTOR_URL` | *(none)* | Collector URL for agent mode |
+| `SIGNALSCOPE_AGENT_SECRET` | *(none)* | Shared secret for agent↔collector auth |
 
 **Example — custom thresholds, top-20 processes, 1-second refresh:**
 
@@ -193,6 +209,14 @@ python -m src.main [OPTIONS]
 | `--alert-log FILE` | *(none)* | Append new anomaly events to FILE |
 | `--snapshot FILE` | *(none)* | Save a one-time snapshot to FILE (.csv or .json) and exit |
 | `--log-level LEVEL` | `WARNING` | Logging verbosity: DEBUG / INFO / WARNING / ERROR |
+| `--db PATH` | `~/.signalscope/metrics.db` | SQLite database path for metrics persistence |
+| `--retention-days N` | `7` | Delete records older than N days on startup |
+| `--slack-webhook URL` | *(none)* | Slack Incoming Webhook URL for anomaly alerts |
+| `--webhook-url URL` | *(none)* | Generic HTTP webhook URL for anomaly alerts |
+| `--notify-cooldown N` | `300` | Seconds between repeated notifications for the same (PID, event) |
+| `--mode MODE` | `dashboard` | Run mode: `dashboard` (default), `agent`, or `collector` |
+| `--collector-url URL` | *(none)* | Collector URL for agent mode (e.g. `http://collector:8000`) |
+| `--agent-secret STR` | *(none)* | Shared secret for agent↔collector authentication |
 
 ### Usage examples
 
@@ -280,6 +304,129 @@ The web dashboard:
 
 ---
 
+## ⚡ Process Kill / Signal Actions
+
+Press **`k`** in the terminal dashboard to send a signal to any process.
+
+You will be prompted for the PID, then `[T]SIGTERM` or `[K]SIGKILL`.
+- SIGTERM is graceful; SIGKILL requires you to type the process name to confirm.
+- Zombie processes are blocked (killing the parent is suggested instead).
+- System / daemon processes (uid 0 or no-tty + uptime > 1 h) are flagged as **high-risk**.
+- All kill actions are appended to `kill_audit.log`.
+
+In the **web dashboard**, each row has an ⚡ button that opens a confirmation modal with the same safeguards.
+
+---
+
+## 🗄️ Metrics Persistence
+
+SignalScope persists process snapshots and anomaly events to a SQLite database.
+
+```bash
+# Default DB at ~/.signalscope/metrics.db
+python -m src.main
+
+# Custom path
+python -m src.main --db /var/lib/signalscope/metrics.db
+
+# Keep 30 days of history
+python -m src.main --retention-days 30
+```
+
+**REST API (web dashboard):**
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/history/{pid}?hours=1` | CPU / memory timeseries for a PID |
+| `GET /api/anomalies?limit=50` | Recent anomaly events |
+| `GET /api/top-offenders?hours=24&metric=cpu` | Processes ranked by average CPU or memory |
+
+The web UI shows a sparkline chart (Chart.js) and a live "Recent Anomalies" sidebar.
+
+---
+
+## 🔔 Notification Hooks
+
+Send alerts to Slack or any HTTP endpoint when anomalies are detected.
+
+```bash
+# Slack
+python -m src.main --slack-webhook https://hooks.slack.com/services/...
+
+# Generic webhook
+python -m src.main --webhook-url https://my-alert-system/endpoint
+
+# Reduce noise: 10-minute cooldown per (PID, event_type) pair
+python -m src.main --slack-webhook $URL --notify-cooldown 600
+```
+
+Or via environment variables: `SIGNALSCOPE_SLACK_WEBHOOK_URL`, `SIGNALSCOPE_WEBHOOK_URL`, `SIGNALSCOPE_NOTIFY_COOLDOWN`.
+
+Slack message format:
+```
+[SignalScope Alert]
+Process: {name} (PID {pid})
+Event: {event_type}
+Detail: {detail}
+Host: {hostname}
+Time: {timestamp}
+```
+
+Uses Python's built-in `urllib.request` — no extra dependencies. Retries once on failure.
+
+---
+
+## 🔒 Web Dashboard Authentication
+
+The web dashboard is protected by HTTP Basic Auth by default.
+
+```bash
+# Auto-generate a random password (printed once, saved to ~/.signalscope/web_credentials)
+python -m src.web.app
+
+# Set a fixed password
+SIGNALSCOPE_WEB_USER=admin SIGNALSCOPE_WEB_PASSWORD=mysecret python -m src.web.app
+
+# Disable auth (trusted local use only)
+python -m src.web.app --no-auth
+```
+
+> ⚠️ **Never expose port 8000 directly to the public internet.**
+> Always place SignalScope behind a reverse proxy (nginx, Caddy) with TLS when exposing it externally.
+
+---
+
+## 🌐 Multi-Host Agent Mode
+
+Monitor multiple machines from a single dashboard.
+
+**On each machine (agent):**
+```bash
+python -m src.main --mode agent --collector-url http://collector-host:8000 \
+  --agent-secret mysecret --interval 5
+```
+
+**On the central collector:**
+```bash
+python -m src.main --mode collector --agent-secret mysecret
+# or
+python -m src.web.app  # (collector mode is built-in)
+```
+
+Then open `http://collector-host:8000` for a unified view of all agents.
+
+**Docker Compose:**
+```bash
+# Start collector
+docker compose --profile collector up
+
+# Start agent on each host
+SIGNALSCOPE_MODE=agent SIGNALSCOPE_COLLECTOR_URL=http://collector:8000 \
+  docker compose --profile cli up
+```
+
+---
+
 ## 🗂️ Project Structure
 
 ```
@@ -298,16 +445,63 @@ signalScope/
 │   │   ├── memory_detector.py       # Flags high memory usage
 │   │   ├── trend_tracker.py         # Detects recurring CPU spikes over time
 │   │   └── daemon_detector.py       # Identifies daemon processes
+│   ├── actions/
+│   │   └── process_killer.py        # Send SIGTERM/SIGKILL; ActionResult + audit log
+│   ├── storage/
+│   │   └── metrics_store.py         # SQLite persistence (snapshots, anomalies, kills)
+│   ├── notifications/
+│   │   └── notifier.py              # Slack + generic webhook notification hooks
 │   └── web/
-│       └── app.py                   # FastAPI web dashboard (WebSocket streaming)
-├── tests/                           # pytest test suite
+│       ├── app.py                   # FastAPI web dashboard (WebSocket + REST API)
+│       └── collector_app.py         # Multi-host collector server
+├── tests/                           # pytest test suite (111 tests)
 ├── Dockerfile                       # Multi-stage Docker image
-├── docker-compose.yml               # Compose profiles: cli / web
+├── docker-compose.yml               # Compose profiles: cli / web / collector
 ├── docker-entrypoint.sh             # Maps ENV vars to CLI flags
 ├── requirements.txt                 # Core runtime dependencies
 ├── requirements-web.txt             # Web dashboard extras (FastAPI, uvicorn)
 ├── requirements-dev.txt             # Development / test dependencies
 └── pyproject.toml
+```
+
+### Architecture (text diagram)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          SignalScope Architecture                           │
+│                                                                             │
+│  psutil ──► ProcessCollector ──► [ProcessInfo list]                         │
+│                                         │                                  │
+│                               ┌─────────▼──────────┐                       │
+│                               │   Insight Engine    │                       │
+│                               │  ZombieDetector     │                       │
+│                               │  AnomalyDetector    │                       │
+│                               │  MemoryDetector     │                       │
+│                               │  TrendTracker       │                       │
+│                               │  DaemonDetector     │                       │
+│                               └─────────┬──────────┘                       │
+│                                         │                                  │
+│              ┌──────────────────────────┼────────────────────────┐         │
+│              ▼                          ▼                         ▼         │
+│        AlertLogger             MetricsStore (SQLite)          Notifier       │
+│        (CSV log)          snapshots/anomalies/kills      Slack/Webhook       │
+│              │                          │                         │         │
+│              ▼                          ▼                         │         │
+│     ┌────────────────┐    ┌─────────────────────────┐             │         │
+│     │ CLI Dashboard  │    │    Web Dashboard (FA)    │◄────────────┘         │
+│     │  rich.Live     │    │  WebSocket + REST API   │                       │
+│     │  press 'k'     │    │  Auth (HTTP Basic)      │                       │
+│     └────────────────┘    │  Kill modal + sparkline │                       │
+│                           └──────────┬──────────────┘                       │
+│                                      │                                      │
+│                            ProcessKiller (actions)                          │
+│                            SIGTERM / SIGKILL + audit                        │
+│                                                                             │
+│  ── Agent Mode ─────────────────────────────────────────────────────────── │
+│  Agent 1 (host-A)  ──POST /ingest──►  Collector (central)                  │
+│  Agent 2 (host-B)  ──POST /ingest──►  http://<collector>:8000/             │
+│  Agent N (host-N)  ──POST /ingest──►  unified multi-host dashboard          │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -324,8 +518,12 @@ signalScope/
    - `DaemonDetector` → no controlling terminal or uptime > 1 hour
 4. **Alert Logger** (`src/alert_logger.py`) — after each analysis cycle, writes new `(pid, insight)` events to a log file; duplicates are suppressed.
 5. **Exporter** (`src/exporter.py`) — serialises the process list to CSV or JSON.
-6. **CLI Dashboard** (`src/ui/dashboard.py`) — renders a live `rich` table with colour styles and a summary banner.
-7. **Web Dashboard** (`src/web/app.py`) — FastAPI app serving an HTML page; a WebSocket endpoint pushes fresh JSON snapshots to the browser at each refresh interval.
+6. **CLI Dashboard** (`src/ui/dashboard.py`) — renders a live `rich` table with colour styles and a summary banner. Press `k` to kill/signal a process.
+7. **Web Dashboard** (`src/web/app.py`) — FastAPI app serving an HTML page; a WebSocket endpoint pushes fresh JSON snapshots to the browser at each refresh interval. REST API for history, anomalies, and signal actions.
+8. **Process Killer** (`src/actions/process_killer.py`) — sends SIGTERM/SIGKILL with zombie/high-risk checks and kill audit logging.
+9. **Metrics Store** (`src/storage/metrics_store.py`) — persists snapshots, anomaly events, and kill events to SQLite with configurable retention.
+10. **Notifier** (`src/notifications/notifier.py`) — dispatches anomaly events to Slack and/or generic HTTP webhooks with cooldown deduplication.
+11. **Collector App** (`src/web/collector_app.py`) — multi-host collector server accepting JSON snapshots from remote agents.
 
 ---
 
