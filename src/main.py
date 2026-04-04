@@ -160,7 +160,11 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--mode",
         default=os.environ.get("SIGNALSCOPE_MODE", "dashboard"),
         choices=["dashboard", "agent", "collector", "cli", "web"],
-        help="Run mode: dashboard, agent, collector (default: dashboard)",
+        help=(
+            "Run mode: dashboard (terminal UI, default), agent (push snapshots to "
+            "collector), collector (receive from agents). "
+            "'cli' and 'web' are deprecated aliases for backward compatibility."
+        ),
     )
     parser.add_argument(
         "--collector-url",
