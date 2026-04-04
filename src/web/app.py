@@ -25,14 +25,16 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import sys
 from pathlib import Path
 from typing import List, Optional
 
 import psutil
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
 from src.actions.process_killer import ProcessKiller
@@ -58,6 +60,13 @@ _config: dict = {}
 # Metrics store (lazily initialised)
 _metrics_store: Optional[MetricsStore] = None
 _seen_anomalies: set = set()
+
+# Notifier (lazily initialised)
+_notifier = None
+_seen_notify: set = set()
+
+# HTTP Basic Auth
+_security = HTTPBasic(auto_error=False)
 
 
 def _get_metrics_store() -> MetricsStore:
@@ -108,6 +117,47 @@ def _get_pipeline():
     if _pipeline is None:
         _pipeline = _build_pipeline(_config)
     return _pipeline
+
+
+def _get_notifier():
+    global _notifier
+    if _notifier is None:
+        from src.notifications.notifier import Notifier, SlackNotifier, GenericWebhookNotifier
+        cooldown = _config.get("notify_cooldown", 300)
+        n = Notifier(cooldown_seconds=cooldown)
+        slack_url = _config.get("slack_webhook", "")
+        webhook_url = _config.get("webhook_url", "")
+        if slack_url:
+            n.add_channel(SlackNotifier(slack_url))
+        if webhook_url:
+            n.add_channel(GenericWebhookNotifier(webhook_url))
+        _notifier = n
+    return _notifier
+
+
+def _check_auth(credentials: HTTPBasicCredentials = Depends(_security)) -> str:
+    """HTTP Basic Auth dependency. Returns username on success."""
+    if _config.get("no_auth"):
+        return ""
+    expected_user = _config.get("web_user", "admin")
+    expected_pass = _config.get("web_password", "")
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    user_ok = secrets.compare_digest(
+        credentials.username.encode(), expected_user.encode()
+    )
+    pass_ok = secrets.compare_digest(
+        credentials.password.encode(), expected_pass.encode()
+    )
+    if not (user_ok and pass_ok):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
 
 
 # ---------------------------------------------------------------------------
@@ -891,14 +941,14 @@ _HTML_TEMPLATE = """\
 # Routes
 # ---------------------------------------------------------------------------
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse, dependencies=[Depends(_check_auth)])
 async def index():
     """Serve the dashboard HTML."""
     interval = _config.get("interval", 2.0)
     return HTMLResponse(_HTML_TEMPLATE.format(interval=interval))
 
 
-@app.get("/health")
+@app.get("/health", dependencies=[Depends(_check_auth)])
 async def health():
     """Simple health-check endpoint."""
     return {"status": "ok"}
@@ -908,7 +958,7 @@ async def health():
 # Process action endpoints
 # ---------------------------------------------------------------------------
 
-@app.post("/api/process/{pid}/signal")
+@app.post("/api/process/{pid}/signal", dependencies=[Depends(_check_auth)])
 async def signal_process(pid: int, req: SignalRequest):
     """Send SIGTERM or SIGKILL to a process and return the ActionResult."""
     if req.signal not in ("SIGTERM", "SIGKILL"):
@@ -929,7 +979,7 @@ async def signal_process(pid: int, req: SignalRequest):
     }
 
 
-@app.get("/api/process/{pid}/info")
+@app.get("/api/process/{pid}/info", dependencies=[Depends(_check_auth)])
 async def process_info(pid: int):
     """Return current snapshot info for a single PID."""
     if not psutil.pid_exists(pid):
@@ -959,21 +1009,21 @@ async def process_info(pid: int):
 # Metrics persistence endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/api/history/{pid}")
+@app.get("/api/history/{pid}", dependencies=[Depends(_check_auth)])
 async def get_history(pid: int, hours: float = 1.0):
     """Return CPU/memory timeseries for a PID over the last N hours."""
     store = _get_metrics_store()
     return store.get_process_history(pid, hours=hours)
 
 
-@app.get("/api/anomalies")
+@app.get("/api/anomalies", dependencies=[Depends(_check_auth)])
 async def get_anomalies(limit: int = 50):
     """Return the most recent anomaly events."""
     store = _get_metrics_store()
     return store.get_recent_anomalies(limit=limit)
 
 
-@app.get("/api/top-offenders")
+@app.get("/api/top-offenders", dependencies=[Depends(_check_auth)])
 async def get_top_offenders(hours: float = 24.0, metric: str = "cpu"):
     """Return processes ranked by average CPU or memory over the time window."""
     store = _get_metrics_store()
@@ -1003,6 +1053,24 @@ async def websocket_endpoint(websocket: WebSocket):
                             store.record_anomaly(p.pid, p.name, "insight", insight)
             except Exception as _exc:
                 logger.debug("MetricsStore error: %s", _exc)
+
+            # Dispatch notifications for new anomalies
+            try:
+                from src.notifications.notifier import AnomalyEvent
+                notifier = _get_notifier()
+                for p in processes:
+                    for insight in p.insights:
+                        key = (p.pid, insight)
+                        if key not in _seen_notify:
+                            _seen_notify.add(key)
+                            from src.main import _insight_to_event_type
+                            notifier.notify(AnomalyEvent(
+                                pid=p.pid, name=p.name,
+                                event_type=_insight_to_event_type(insight),
+                                detail=insight,
+                            ))
+            except Exception as _exc:
+                logger.debug("Notifier error: %s", _exc)
 
             # System-level stats
             try:
@@ -1054,6 +1122,32 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 # ---------------------------------------------------------------------------
+# Agent signal endpoint (accepts commands from collector)
+# ---------------------------------------------------------------------------
+
+@app.post("/signal")
+async def agent_signal_endpoint(request: Request):
+    """Accept signal commands from a collector (agent mode)."""
+    agent_secret = _config.get("agent_secret", "")
+    if agent_secret:
+        incoming = request.headers.get("X-Agent-Secret", "")
+        if not secrets.compare_digest(agent_secret.encode(), incoming.encode()):
+            raise HTTPException(status_code=403, detail="Invalid agent secret")
+    body = await request.json()
+    pid = body.get("pid")
+    sig = body.get("signal", "SIGTERM")
+    if not pid:
+        raise HTTPException(status_code=400, detail="pid required")
+    from src.actions.process_killer import ProcessKiller
+    killer = ProcessKiller()
+    if sig == "SIGKILL":
+        result = killer.send_sigkill(int(pid))
+    else:
+        result = killer.send_sigterm(int(pid))
+    return result.__dict__
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -1093,6 +1187,47 @@ def _parse_args(argv=None) -> argparse.Namespace:
         metavar="N",
         help="Days of metrics history to retain (default: 7)",
     )
+    parser.add_argument(
+        "--slack-webhook",
+        default=os.environ.get("SIGNALSCOPE_SLACK_WEBHOOK_URL", ""),
+        metavar="URL",
+        help="Slack Incoming Webhook URL for anomaly notifications",
+    )
+    parser.add_argument(
+        "--webhook-url",
+        default=os.environ.get("SIGNALSCOPE_WEBHOOK_URL", ""),
+        metavar="URL",
+        help="Generic webhook URL for anomaly notifications",
+    )
+    parser.add_argument(
+        "--notify-cooldown",
+        type=int,
+        default=int(os.environ.get("SIGNALSCOPE_NOTIFY_COOLDOWN", "300")),
+        metavar="N",
+        help="Seconds between repeat notifications per (pid, event) (default: 300)",
+    )
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        default=os.environ.get("SIGNALSCOPE_NO_AUTH", "").lower() in ("true", "1"),
+        help="Disable HTTP Basic Auth for the web dashboard",
+    )
+    parser.add_argument(
+        "--web-user",
+        default=os.environ.get("SIGNALSCOPE_WEB_USER", "admin"),
+        help="Web dashboard username (default: admin)",
+    )
+    parser.add_argument(
+        "--web-password",
+        default=os.environ.get("SIGNALSCOPE_WEB_PASSWORD", ""),
+        help="Web dashboard password",
+    )
+    parser.add_argument(
+        "--agent-secret",
+        default=os.environ.get("SIGNALSCOPE_AGENT_SECRET", ""),
+        metavar="STR",
+        help="Shared secret for agent/collector authentication",
+    )
     return parser.parse_args(argv)
 
 
@@ -1105,6 +1240,28 @@ if __name__ == "__main__":
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    # Password generation logic
+    web_password = args.web_password
+    if not web_password and not args.no_auth:
+        creds_file = Path.home() / ".signalscope" / "web_credentials"
+        creds_file.parent.mkdir(parents=True, exist_ok=True)
+        if creds_file.exists():
+            stored = creds_file.read_text().strip().splitlines()
+            for line in stored:
+                if ":" in line:
+                    _, web_password = line.split(":", 1)
+                    break
+        if not web_password:
+            import string
+            alphabet = string.ascii_letters + string.digits
+            web_password = "".join(secrets.choice(alphabet) for _ in range(16))
+            creds_file.write_text(f"{args.web_user}:{web_password}\n")
+            print("┌─────────────────────────────────────────┐")
+            print("│  Web dashboard password (one-time):     │")
+            print(f"│  user: {args.web_user:<8}  password: {web_password:<16} │")
+            print("│  Set SIGNALSCOPE_WEB_PASSWORD to fix.  │")
+            print("└─────────────────────────────────────────┘")
+
     # Populate global config
     _config.update({
         "interval": args.interval,
@@ -1115,6 +1272,13 @@ if __name__ == "__main__":
         "user": args.user,
         "db": args.db,
         "retention_days": args.retention_days,
+        "slack_webhook": args.slack_webhook,
+        "webhook_url": args.webhook_url,
+        "notify_cooldown": args.notify_cooldown,
+        "web_user": args.web_user,
+        "web_password": web_password,
+        "no_auth": args.no_auth,
+        "agent_secret": args.agent_secret,
     })
 
     print(f"SignalScope web dashboard → http://{args.host}:{args.port}")
