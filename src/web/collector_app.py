@@ -24,8 +24,15 @@ def create_collector_app(args=None) -> FastAPI:
 
     @app.post("/ingest")
     async def ingest(request: Request, x_agent_secret: str = Header(default="")):
-        if agent_secret and (not x_agent_secret or not secrets.compare_digest(agent_secret.encode(), x_agent_secret.encode())):
-            raise HTTPException(status_code=403, detail="Invalid agent secret")
+        if agent_secret:
+            try:
+                valid = secrets.compare_digest(
+                    agent_secret.encode("ascii"), x_agent_secret.encode("ascii")
+                )
+            except (UnicodeEncodeError, ValueError):
+                valid = False
+            if not valid:
+                raise HTTPException(status_code=403, detail="Invalid agent secret")
         try:
             body = await request.json()
         except Exception:
@@ -68,8 +75,15 @@ def create_collector_app(args=None) -> FastAPI:
     @app.post("/agents/{agent_id}/signal")
     async def agent_signal(agent_id: str, request: Request, x_agent_secret: str = Header(default="")):
         """Forward a signal request to the agent's /signal endpoint (if configured)."""
-        if agent_secret and (not x_agent_secret or not secrets.compare_digest(agent_secret.encode(), x_agent_secret.encode())):
-            raise HTTPException(status_code=403, detail="Invalid agent secret")
+        if agent_secret:
+            try:
+                valid = secrets.compare_digest(
+                    agent_secret.encode("ascii"), x_agent_secret.encode("ascii")
+                )
+            except (UnicodeEncodeError, ValueError):
+                valid = False
+            if not valid:
+                raise HTTPException(status_code=403, detail="Invalid agent secret")
         # Full proxy requires knowing the agent's address.
         raise HTTPException(status_code=501, detail="Signal forwarding not yet configured")
 

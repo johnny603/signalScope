@@ -1256,13 +1256,14 @@ if __name__ == "__main__":
             alphabet = string.ascii_letters + string.digits
             web_password = "".join(secrets.choice(alphabet) for _ in range(16))
             creds_file.write_text(f"{args.web_user}:{web_password}\n")
-            # Display the one-time credential to the operator on stdout only.
-            _cred_display = web_password
-            sys.stdout.write("┌─────────────────────────────────────────┐\n")
-            sys.stdout.write("│  Web dashboard credential (one-time):   │\n")
-            sys.stdout.write(f"│  user: {args.web_user:<8}  pass: {_cred_display:<18} │\n")
-            sys.stdout.write("│  Set SIGNALSCOPE_WEB_PASSWORD to fix.  │\n")
-            sys.stdout.write("└─────────────────────────────────────────┘\n")
+            # Inform the operator where to find the credential — never print the
+            # credential itself to avoid clear-text exposure in terminal logs.
+            sys.stdout.write("┌─────────────────────────────────────────────────────┐\n")
+            sys.stdout.write("│  Web dashboard credential generated (one-time):     │\n")
+            sys.stdout.write(f"│  user: {args.web_user}                                     │\n")
+            sys.stdout.write(f"│  file: {str(creds_file):<44} │\n")
+            sys.stdout.write("│  Set SIGNALSCOPE_WEB_PASSWORD env var to fix.       │\n")
+            sys.stdout.write("└─────────────────────────────────────────────────────┘\n")
 
     # Populate global config
     _config.update({

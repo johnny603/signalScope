@@ -33,7 +33,10 @@ class TestCollectorApp:
         assert any(a["agent_id"] == "test-agent-1" for a in agents)
 
     def test_ingest_wrong_secret(self):
-        _app = create_collector_app(type('args', (), {'agent_secret': 'mysecret'})())
+        from unittest.mock import MagicMock
+        mock_args = MagicMock()
+        mock_args.agent_secret = "mysecret"
+        _app = create_collector_app(mock_args)
         client = TestClient(_app)
         resp = client.post("/ingest", json={"agent_id": "x"}, headers={"X-Agent-Secret": "wrong"})
         assert resp.status_code == 403
@@ -50,9 +53,11 @@ class TestCollectorApp:
 
 class TestAgentId:
     def test_get_or_create_agent_id(self, tmp_path):
+        import uuid
         from src.main import _get_or_create_agent_id
         with patch('pathlib.Path.home', return_value=tmp_path):
             agent_id1 = _get_or_create_agent_id()
             agent_id2 = _get_or_create_agent_id()
         assert agent_id1 == agent_id2
         assert len(agent_id1) == 36  # UUID format
+        uuid.UUID(agent_id1)  # Raises ValueError if not a valid UUID
