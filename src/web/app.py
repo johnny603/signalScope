@@ -43,6 +43,7 @@ from src.insights.memory_detector import MemoryAnomalyDetector
 from src.insights.trend_tracker import TrendTracker
 from src.insights.zombie_detector import ZombieDetector
 from src.models.process import ProcessInfo
+from src.storage.metrics_store import MetricsStore
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,22 @@ app = FastAPI(title="SignalScope", docs_url=None, redoc_url=None)
 
 # Global configuration injected at startup
 _config: dict = {}
+
+# Metrics store (lazily initialised)
+_metrics_store: Optional[MetricsStore] = None
+_seen_anomalies: set = set()
+
+
+def _get_metrics_store() -> MetricsStore:
+    global _metrics_store
+    if _metrics_store is None:
+        db_path = _config.get(
+            "db",
+            str(Path.home() / ".signalscope" / "metrics.db"),
+        )
+        retention_days = _config.get("retention_days", 7)
+        _metrics_store = MetricsStore(db_path=db_path, retention_days=retention_days)
+    return _metrics_store
 
 
 def _build_pipeline(cfg: dict):
@@ -303,7 +320,119 @@ _HTML_TEMPLATE = """\
       color: var(--dim);
       font-size: 0.72rem;
     }}
+
+    /* Main layout */
+    .main-layout {{
+      display: flex;
+      min-height: 0;
+    }}
+    .main-content {{
+      flex: 1;
+      min-width: 0;
+      overflow-x: auto;
+    }}
+
+    /* Anomaly sidebar */
+    .anomaly-sidebar {{
+      width: 300px;
+      min-width: 300px;
+      border-left: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }}
+    .sidebar-header {{
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      flex-shrink: 0;
+    }}
+    #anomaly-list {{
+      overflow-y: auto;
+      flex: 1;
+    }}
+    .anomaly-item {{
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.78rem;
+      cursor: default;
+    }}
+    .anomaly-item .a-time {{ color: var(--muted); font-size: 0.7rem; display: block; }}
+    .anomaly-item .a-name {{ color: var(--text); font-weight: 600; }}
+    .anomaly-item .a-detail {{ color: var(--muted); display: block; white-space: normal; word-break: break-word; }}
+
+    /* Row clickable */
+    tbody tr {{ cursor: pointer; }}
+
+    /* Detail drawer */
+    #detail-drawer {{
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.72);
+      z-index: 90;
+      align-items: flex-end;
+      justify-content: center;
+    }}
+    #detail-drawer.open {{ display: flex; }}
+    .drawer-box {{
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px 8px 0 0;
+      width: 100%;
+      max-width: 820px;
+      max-height: 72vh;
+      display: flex;
+      flex-direction: column;
+    }}
+    .drawer-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }}
+    .drawer-header h3 {{ color: var(--accent); font-size: 1rem; }}
+    .drawer-close {{
+      background: none; border: none; color: var(--muted);
+      cursor: pointer; font-size: 1.2rem; padding: 2px 6px;
+    }}
+    .drawer-close:hover {{ color: var(--text); }}
+    .drawer-body {{
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }}
+    .drawer-chart-wrap {{
+      height: 200px;
+      position: relative;
+    }}
+    .drawer-section-title {{
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+    }}
+    .d-anomaly-item {{
+      font-size: 0.78rem;
+      padding: 4px 0;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+    }}
+    .d-anomaly-item .da-time {{ color: var(--dim); margin-right: 6px; }}
+    .drawer-kill-actions {{ display: flex; gap: 10px; flex-wrap: wrap; }}
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 </head>
 <body>
   <header>
@@ -323,23 +452,68 @@ _HTML_TEMPLATE = """\
     <div class="pill">🤖 Daemons <span class="val" id="cnt-daemon">0</span></div>
   </div>
 
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th style="text-align:right">PID</th>
-          <th>Name</th>
-          <th style="text-align:right">CPU %&nbsp;↓</th>
-          <th style="text-align:right">Mem %</th>
-          <th>Status</th>
-          <th>Insight</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody id="proc-body">
-        <tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">Loading…</td></tr>
-      </tbody>
-    </table>
+  <div class="main-layout">
+    <div class="main-content">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="text-align:right">PID</th>
+              <th>Name</th>
+              <th style="text-align:right">CPU %&nbsp;↓</th>
+              <th style="text-align:right">Mem %</th>
+              <th>Status</th>
+              <th>Insight</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="proc-body">
+            <tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <aside class="anomaly-sidebar">
+      <div class="sidebar-header">Recent Anomalies</div>
+      <div id="anomaly-list">
+        <div style="padding:12px;color:var(--muted);font-size:0.8rem">Loading…</div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Detail drawer -->
+  <div id="detail-drawer">
+    <div class="drawer-box">
+      <div class="drawer-header">
+        <h3 id="d-title">Process Details</h3>
+        <button class="drawer-close" onclick="closeDrawer()">✕</button>
+      </div>
+      <div class="drawer-body">
+        <div>
+          <div class="drawer-section-title">CPU &amp; Memory — Last 60 min</div>
+          <div class="drawer-chart-wrap">
+            <canvas id="sparkline-canvas"></canvas>
+          </div>
+        </div>
+        <div>
+          <div class="drawer-section-title">Anomaly Events</div>
+          <div id="d-anomaly-list" style="font-size:0.8rem;color:var(--muted)">Loading…</div>
+        </div>
+        <div class="drawer-kill-actions">
+          <button class="btn btn-term"   onclick="drawerDoSignal('SIGTERM')">Send SIGTERM</button>
+          <button class="btn btn-kill"   onclick="drawerInitKill()">Force Kill (SIGKILL)</button>
+          <button class="btn btn-cancel" onclick="closeDrawer()">Close</button>
+        </div>
+        <div class="confirm-wrap" id="drawer-confirm-wrap">
+          <label id="drawer-confirm-label">Type process name to confirm:</label>
+          <input id="drawer-confirm-input" type="text" placeholder="" />
+          <div class="modal-actions" style="margin-top:8px">
+            <button class="btn btn-kill"   onclick="drawerDoSignal('SIGKILL')">Confirm SIGKILL</button>
+            <button class="btn btn-cancel" onclick="drawerCancelKill()">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Kill modal -->
@@ -433,14 +607,14 @@ _HTML_TEMPLATE = """\
       }}
       tbody.innerHTML = procs.map(p => {{
         const cls = rowClass(p);
-        return `<tr class="${{cls}}" id="row-${{p.pid}}">
+        return `<tr class="${{cls}}" id="row-${{p.pid}}" onclick="openDrawer(event,${{p.pid}},'${{esc(p.name)}}')">
           <td style="text-align:right">${{p.pid}}</td>
           <td>${{esc(p.name)}}</td>
           <td style="text-align:right">${{p.cpu_percent.toFixed(1)}}</td>
           <td style="text-align:right">${{p.memory_percent.toFixed(2)}}</td>
           <td>${{esc(p.status)}}</td>
           <td class="insight">${{esc(p.insight_text)}}</td>
-          <td><button class="kill-btn" data-pid="${{p.pid}}" data-name="${{esc(p.name)}}" onclick="openModal(this)">⚡</button></td>
+          <td><button class="kill-btn" data-pid="${{p.pid}}" data-name="${{esc(p.name)}}" onclick="event.stopPropagation();openModal(this)">⚡</button></td>
         </tr>`;
       }}).join('');
     }}
@@ -546,7 +720,167 @@ _HTML_TEMPLATE = """\
       _toastTimer = setTimeout(() => {{ el.className = ''; }}, 3000);
     }}
 
+    // ------------------------------------------------------------------
+    // Anomaly sidebar
+    // ------------------------------------------------------------------
+    async function fetchAnomalies() {{
+      try {{
+        const resp = await fetch('/api/anomalies?limit=20');
+        if (!resp.ok) return;
+        const items = await resp.json();
+        const el = document.getElementById('anomaly-list');
+        if (!items.length) {{
+          el.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:0.8rem">No anomalies recorded yet.</div>';
+          return;
+        }}
+        el.innerHTML = items.map(a => {{
+          const t = (a.occurred_at || '').replace('T', ' ').substring(0, 19);
+          return `<div class="anomaly-item">
+            <span class="a-time">${{esc(t)}} UTC</span>
+            <span class="a-name">${{esc(a.name)}} <span style="color:var(--muted)">(PID ${{a.pid}})</span></span>
+            <span class="a-detail">${{esc(a.detail || a.event_type)}}</span>
+          </div>`;
+        }}).join('');
+      }} catch(e) {{
+        /* silent */
+      }}
+    }}
+
+    // ------------------------------------------------------------------
+    // Detail drawer
+    // ------------------------------------------------------------------
+    let _drawerPid = null, _drawerName = null;
+    let _sparkChart = null;
+
+    async function openDrawer(event, pid, name) {{
+      _drawerPid = pid; _drawerName = name;
+      document.getElementById('d-title').textContent = name + ' (PID ' + pid + ')';
+      document.getElementById('d-anomaly-list').textContent = 'Loading…';
+      document.getElementById('drawer-confirm-wrap').style.display = 'none';
+      document.getElementById('drawer-confirm-input').value = '';
+      document.getElementById('detail-drawer').className = 'open';
+
+      // Fetch history for sparkline
+      try {{
+        const resp = await fetch('/api/history/' + pid + '?hours=1');
+        const rows = resp.ok ? await resp.json() : [];
+        renderSparkline(rows);
+      }} catch(e) {{ renderSparkline([]); }}
+
+      // Fetch anomalies for this pid
+      try {{
+        const resp = await fetch('/api/anomalies?limit=100');
+        const all  = resp.ok ? await resp.json() : [];
+        const mine = all.filter(a => a.pid === pid);
+        const el   = document.getElementById('d-anomaly-list');
+        if (!mine.length) {{
+          el.textContent = 'No anomaly events recorded for this process.';
+        }} else {{
+          el.innerHTML = mine.map(a => {{
+            const t = (a.occurred_at || '').replace('T',' ').substring(0,19);
+            return `<div class="d-anomaly-item"><span class="da-time">${{esc(t)}}</span>${{esc(a.detail || a.event_type)}}</div>`;
+          }}).join('');
+        }}
+      }} catch(e) {{
+        document.getElementById('d-anomaly-list').textContent = 'Could not load anomalies.';
+      }}
+    }}
+
+    function renderSparkline(rows) {{
+      const canvas = document.getElementById('sparkline-canvas');
+      if (_sparkChart) {{ _sparkChart.destroy(); _sparkChart = null; }}
+      const labels = rows.map(r => (r.captured_at || '').substring(11,19));
+      const cpuData = rows.map(r => r.cpu_percent ?? null);
+      const memData = rows.map(r => r.memory_percent ?? null);
+      _sparkChart = new Chart(canvas, {{
+        type: 'line',
+        data: {{
+          labels,
+          datasets: [
+            {{
+              label: 'CPU %',
+              data: cpuData,
+              borderColor: '#e3b341',
+              backgroundColor: 'rgba(227,179,65,0.1)',
+              tension: 0.3,
+              pointRadius: 0,
+              borderWidth: 2,
+            }},
+            {{
+              label: 'Mem %',
+              data: memData,
+              borderColor: '#bc8cff',
+              backgroundColor: 'rgba(188,140,255,0.1)',
+              tension: 0.3,
+              pointRadius: 0,
+              borderWidth: 2,
+            }},
+          ],
+        }},
+        options: {{
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {{ legend: {{ labels: {{ color: '#c9d1d9', font: {{ size: 11 }} }} }} }},
+          scales: {{
+            x: {{ ticks: {{ color: '#8b949e', maxTicksLimit: 8, font: {{ size: 10 }} }}, grid: {{ color: '#30363d' }} }},
+            y: {{ ticks: {{ color: '#8b949e', font: {{ size: 10 }} }}, grid: {{ color: '#30363d' }} }},
+          }},
+        }},
+      }});
+    }}
+
+    function closeDrawer() {{
+      document.getElementById('detail-drawer').className = '';
+      _drawerPid = null; _drawerName = null;
+      if (_sparkChart) {{ _sparkChart.destroy(); _sparkChart = null; }}
+    }}
+
+    async function drawerDoSignal(sig) {{
+      if (sig === 'SIGKILL') {{
+        const typed = document.getElementById('drawer-confirm-input').value.trim();
+        if (typed !== _drawerName) {{
+          showToast('Confirmation failed — action cancelled.', 'error');
+          closeDrawer();
+          return;
+        }}
+      }}
+      const pid = _drawerPid, name = _drawerName;
+      closeDrawer();
+      try {{
+        const resp = await fetch('/api/process/' + pid + '/signal', {{
+          method: 'POST',
+          headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify({{signal: sig}}),
+        }});
+        const data = await resp.json();
+        if (resp.ok && data.success) {{
+          showToast('PID ' + pid + ' (' + name + ') terminated successfully.', 'success');
+          const row = document.getElementById('row-' + pid);
+          if (row) row.style.opacity = '0.3';
+        }} else {{
+          showToast(data.message || 'Signal failed.', 'error');
+        }}
+      }} catch(e) {{
+        showToast('Request failed: ' + e, 'error');
+      }}
+    }}
+
+    function drawerInitKill() {{
+      const wrap = document.getElementById('drawer-confirm-wrap');
+      wrap.style.display = 'block';
+      document.getElementById('drawer-confirm-label').textContent = "Type process name '" + _drawerName + "' to confirm:";
+      document.getElementById('drawer-confirm-input').placeholder = _drawerName;
+      document.getElementById('drawer-confirm-input').focus();
+    }}
+
+    function drawerCancelKill() {{
+      document.getElementById('drawer-confirm-wrap').style.display = 'none';
+      document.getElementById('drawer-confirm-input').value = '';
+    }}
+
     connect();
+    fetchAnomalies();
+    setInterval(fetchAnomalies, 10000);
   </script>
 </body>
 </html>
@@ -621,6 +955,31 @@ async def process_info(pid: int):
         raise HTTPException(status_code=404, detail=f"PID {pid} not found")
 
 
+# ---------------------------------------------------------------------------
+# Metrics persistence endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/history/{pid}")
+async def get_history(pid: int, hours: float = 1.0):
+    """Return CPU/memory timeseries for a PID over the last N hours."""
+    store = _get_metrics_store()
+    return store.get_process_history(pid, hours=hours)
+
+
+@app.get("/api/anomalies")
+async def get_anomalies(limit: int = 50):
+    """Return the most recent anomaly events."""
+    store = _get_metrics_store()
+    return store.get_recent_anomalies(limit=limit)
+
+
+@app.get("/api/top-offenders")
+async def get_top_offenders(hours: float = 24.0, metric: str = "cpu"):
+    """Return processes ranked by average CPU or memory over the time window."""
+    store = _get_metrics_store()
+    return store.get_top_offenders(hours=hours, metric=metric)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """Stream process snapshots to the browser."""
@@ -631,6 +990,19 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             processes = await asyncio.get_event_loop().run_in_executor(None, pipeline)
+
+            # Persist snapshot and new anomaly insights
+            try:
+                store = _get_metrics_store()
+                store.record_snapshot(processes)
+                for p in processes:
+                    for insight in p.insights:
+                        key = (p.pid, insight)
+                        if key not in _seen_anomalies:
+                            _seen_anomalies.add(key)
+                            store.record_anomaly(p.pid, p.name, "insight", insight)
+            except Exception as _exc:
+                logger.debug("MetricsStore error: %s", _exc)
 
             # System-level stats
             try:
@@ -705,6 +1077,22 @@ def _parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--user", default=os.environ.get("SIGNALSCOPE_USER") or None)
     parser.add_argument("--log-level", default=os.environ.get("SIGNALSCOPE_LOG_LEVEL", "WARNING"),
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--db",
+        default=os.environ.get(
+            "SIGNALSCOPE_DB_PATH",
+            str(Path.home() / ".signalscope" / "metrics.db"),
+        ),
+        metavar="PATH",
+        help="SQLite database path for metrics persistence",
+    )
+    parser.add_argument(
+        "--retention-days",
+        type=int,
+        default=7,
+        metavar="N",
+        help="Days of metrics history to retain (default: 7)",
+    )
     return parser.parse_args(argv)
 
 
@@ -725,6 +1113,8 @@ if __name__ == "__main__":
         "mem_threshold": args.mem_threshold,
         "no_daemon": args.no_daemon,
         "user": args.user,
+        "db": args.db,
+        "retention_days": args.retention_days,
     })
 
     print(f"SignalScope web dashboard → http://{args.host}:{args.port}")

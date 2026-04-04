@@ -15,12 +15,16 @@ Options
   --alert-log FILE       Append anomaly alerts to FILE (CSV-style log)
   --snapshot FILE        Collect once, save top-N processes to FILE (.csv or .json), then exit
   --log-level TEXT       Logging level: DEBUG, INFO, WARNING, ERROR (default: WARNING)
+  --db PATH              SQLite database path for metrics persistence
+  --retention-days N     Days of metrics history to retain (default: 7)
   --help                 Show this help message and exit.
 """
 
 import argparse
 import logging
+import os
 import sys
+from pathlib import Path
 from typing import List
 
 from src.alert_logger import AlertLogger
@@ -32,6 +36,7 @@ from src.insights.memory_detector import MemoryAnomalyDetector
 from src.insights.trend_tracker import TrendTracker
 from src.insights.zombie_detector import ZombieDetector
 from src.models.process import ProcessInfo
+from src.storage.metrics_store import MetricsStore
 from src.ui.dashboard import Dashboard
 
 
@@ -107,6 +112,22 @@ def parse_args(argv=None) -> argparse.Namespace:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging verbosity (default: WARNING)",
     )
+    parser.add_argument(
+        "--db",
+        default=os.environ.get(
+            "SIGNALSCOPE_DB_PATH",
+            str(Path.home() / ".signalscope" / "metrics.db"),
+        ),
+        metavar="PATH",
+        help="SQLite database path for metrics persistence",
+    )
+    parser.add_argument(
+        "--retention-days",
+        type=int,
+        default=7,
+        metavar="N",
+        help="Days of metrics history to retain (default: 7)",
+    )
     return parser.parse_args(argv)
 
 
@@ -144,6 +165,25 @@ def main(argv=None) -> int:
         def analyze_fn(processes: List[ProcessInfo]) -> None:  # type: ignore[misc]
             _base_analyze(processes)
             alert_logger.log_anomalies(processes)
+
+    # Wrap analyze_fn with MetricsStore persistence.
+    if args.db:
+        store = MetricsStore(db_path=args.db, retention_days=args.retention_days)
+        _prev_analyze = analyze_fn
+        _seen_anomalies: set = set()
+
+        def analyze_fn(processes: List[ProcessInfo]) -> None:  # type: ignore[misc]
+            _prev_analyze(processes)
+            try:
+                store.record_snapshot(processes)
+                for p in processes:
+                    for insight in p.insights:
+                        key = (p.pid, insight)
+                        if key not in _seen_anomalies:
+                            _seen_anomalies.add(key)
+                            store.record_anomaly(p.pid, p.name, "insight", insight)
+            except Exception as exc:
+                logging.getLogger(__name__).debug("MetricsStore error: %s", exc)
 
     # Snapshot mode: collect once, export, and exit.
     if args.snapshot:
