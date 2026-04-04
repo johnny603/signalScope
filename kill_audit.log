@@ -118,3 +118,43 @@
 2026-04-04T01:12:08.180947+00:00 | 500 | longdaemon | SIGTERM | True | runner
 2026-04-04T01:12:08.182610+00:00 | 600 | shell | SIGTERM | True | runner
 2026-04-04T01:12:08.184995+00:00 | 42 | testproc | SIGTERM | True | runner
+2026-04-04T01:12:47.174436+00:00 | 99999 |  | SIGTERM | False | runner
+2026-04-04T01:12:47.176142+00:00 | 200 | defunct | SIGTERM | False | runner
+2026-04-04T01:12:47.177645+00:00 | 123 | myproc | SIGTERM | True | runner
+2026-04-04T01:12:47.179309+00:00 | 123 | myproc | SIGKILL | True | runner
+2026-04-04T01:12:47.180952+00:00 | 1 | root_proc | SIGKILL | False | runner
+2026-04-04T01:12:47.182515+00:00 | 999 | gone | SIGTERM | False | runner
+2026-04-04T01:12:47.184085+00:00 | 1 | daemon | SIGTERM | True | runner
+2026-04-04T01:12:47.185693+00:00 | 500 | longdaemon | SIGTERM | True | runner
+2026-04-04T01:12:47.187326+00:00 | 600 | shell | SIGTERM | True | runner
+2026-04-04T01:12:47.189635+00:00 | 42 | testproc | SIGTERM | True | runner
+2026-04-04T01:12:52.355707+00:00 | 99999 |  | SIGTERM | False | runner
+2026-04-04T01:12:52.357462+00:00 | 200 | defunct | SIGTERM | False | runner
+2026-04-04T01:12:52.358953+00:00 | 123 | myproc | SIGTERM | True | runner
+2026-04-04T01:12:52.360630+00:00 | 123 | myproc | SIGKILL | True | runner
+2026-04-04T01:12:52.362285+00:00 | 1 | root_proc | SIGKILL | False | runner
+2026-04-04T01:12:52.363944+00:00 | 999 | gone | SIGTERM | False | runner
+2026-04-04T01:12:52.365530+00:00 | 1 | daemon | SIGTERM | True | runner
+2026-04-04T01:12:52.367182+00:00 | 500 | longdaemon | SIGTERM | True | runner
+2026-04-04T01:12:52.368835+00:00 | 600 | shell | SIGTERM | True | runner
+2026-04-04T01:12:52.371207+00:00 | 42 | testproc | SIGTERM | True | runner
+2026-04-04T01:12:57.621639+00:00 | 99999 |  | SIGTERM | False | runner
+2026-04-04T01:12:57.623357+00:00 | 200 | defunct | SIGTERM | False | runner
+2026-04-04T01:12:57.624819+00:00 | 123 | myproc | SIGTERM | True | runner
+2026-04-04T01:12:57.626503+00:00 | 123 | myproc | SIGKILL | True | runner
+2026-04-04T01:12:57.628094+00:00 | 1 | root_proc | SIGKILL | False | runner
+2026-04-04T01:12:57.629668+00:00 | 999 | gone | SIGTERM | False | runner
+2026-04-04T01:12:57.631210+00:00 | 1 | daemon | SIGTERM | True | runner
+2026-04-04T01:12:57.632857+00:00 | 500 | longdaemon | SIGTERM | True | runner
+2026-04-04T01:12:57.634474+00:00 | 600 | shell | SIGTERM | True | runner
+2026-04-04T01:12:57.636848+00:00 | 42 | testproc | SIGTERM | True | runner
+2026-04-04T01:13:02.820126+00:00 | 99999 |  | SIGTERM | False | runner
+2026-04-04T01:13:02.821846+00:00 | 200 | defunct | SIGTERM | False | runner
+2026-04-04T01:13:02.823356+00:00 | 123 | myproc | SIGTERM | True | runner
+2026-04-04T01:13:02.825003+00:00 | 123 | myproc | SIGKILL | True | runner
+2026-04-04T01:13:02.826629+00:00 | 1 | root_proc | SIGKILL | False | runner
+2026-04-04T01:13:02.828215+00:00 | 999 | gone | SIGTERM | False | runner
+2026-04-04T01:13:02.829807+00:00 | 1 | daemon | SIGTERM | True | runner
+2026-04-04T01:13:02.831399+00:00 | 500 | longdaemon | SIGTERM | True | runner
+2026-04-04T01:13:02.833017+00:00 | 600 | shell | SIGTERM | True | runner
+2026-04-04T01:13:02.835352+00:00 | 42 | testproc | SIGTERM | True | runner
