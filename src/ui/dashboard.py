@@ -1,6 +1,7 @@
 """Rich-based terminal dashboard for SignalScope."""
 
 import logging
+import sys
 import time
 from typing import Callable, List, Optional
 
@@ -13,6 +14,20 @@ from rich import box
 from src.models.process import ProcessInfo
 
 logger = logging.getLogger(__name__)
+
+def _check_keypress() -> str:
+    """Non-blocking single keypress check (Unix/tty only). Returns '' if nothing pending."""
+    if not sys.stdin.isatty():
+        return ''
+    try:
+        import select
+        rlist, _, _ = select.select([sys.stdin], [], [], 0)
+        if rlist:
+            return sys.stdin.read(1)
+    except Exception:
+        pass
+    return ''
+
 
 # CPU % above this value is highlighted yellow; zombie rows are bold red.
 HIGH_CPU_THRESHOLD = 50.0
@@ -161,10 +176,90 @@ class Dashboard:
                     analyze_fn(processes)
                     display = self._prepare(processes)
                     live.update(build_table(display))
-                    time.sleep(self.refresh_interval)
+
+                    # Sleep in short increments so we can react to keypresses.
+                    deadline = time.time() + self.refresh_interval
+                    while time.time() < deadline:
+                        ch = _check_keypress()
+                        if ch == 'k':
+                            live.stop()
+                            self._handle_kill_prompt()
+                            live.start()
+                            break
+                        time.sleep(0.1)
                 except KeyboardInterrupt:
                     break
 
         logger.info("Dashboard stopped.")
+
+    def _handle_kill_prompt(self) -> None:
+        """Interactive kill prompt invoked when the user presses 'k'."""
+        from src.actions.process_killer import ProcessKiller
+
+        killer = ProcessKiller()
+        pid_str = self._console.input("[bold]Enter PID to signal:[/bold] ").strip()
+        try:
+            pid = int(pid_str)
+        except ValueError:
+            self._console.print("[red]Invalid PID[/red]")
+            self._console.input("[dim]Press Enter to continue…[/dim]")
+            return
+
+        try:
+            p = psutil.Process(pid)
+            info = p.as_dict(attrs=["name", "status", "ppid", "uids", "terminal", "create_time"])
+        except psutil.NoSuchProcess:
+            self._console.print(f"[red]PID {pid} not found[/red]")
+            self._console.input("[dim]Press Enter to continue…[/dim]")
+            return
+
+        if info["status"] == "zombie":
+            self._console.print(
+                f"[yellow]⚠ This is a zombie process. Kill parent PID {info['ppid']} instead.[/yellow]"
+            )
+            self._console.input("[dim]Press Enter to continue…[/dim]")
+            return
+
+        high_risk = False
+        uids = info.get("uids")
+        if uids and uids.real == 0:
+            high_risk = True
+        elif not info.get("terminal") and (time.time() - (info.get("create_time") or time.time())) > 3600:
+            high_risk = True
+
+        if high_risk:
+            self._console.print(
+                "[bold red]⚠ WARNING: This appears to be a system process. "
+                "Killing it may destabilise your system.[/bold red]"
+            )
+
+        name = info.get("name", str(pid))
+        sig_choice = self._console.input(
+            "[bold]Send [[T]SIGTERM or [[K]SIGKILL? [/bold]"
+        ).strip().upper()
+
+        if sig_choice == "T":
+            result = killer.send_sigterm(pid)
+        elif sig_choice == "K":
+            confirm = self._console.input(
+                f"[bold red]Type process name '{name}' to confirm SIGKILL:[/bold red] "
+            ).strip()
+            if confirm != name:
+                self._console.print("[yellow]Confirmation failed. Action cancelled.[/yellow]")
+                self._console.input("[dim]Press Enter to continue…[/dim]")
+                return
+            result = killer.send_sigkill(pid)
+        else:
+            self._console.print("[yellow]Cancelled.[/yellow]")
+            self._console.input("[dim]Press Enter to continue…[/dim]")
+            return
+
+        if result.success:
+            self._console.print(
+                f"[green]✓ PID {pid} ({result.process_name}) signalled successfully.[/green]"
+            )
+        else:
+            self._console.print(f"[red]✗ {result.message}[/red]")
+        self._console.input("[dim]Press Enter to continue…[/dim]")
 
 

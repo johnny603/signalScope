@@ -32,9 +32,11 @@ from typing import List, Optional
 
 import psutil
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
+from src.actions.process_killer import ProcessKiller
 from src.collector.process_collector import ProcessCollector
 from src.insights.anomaly_detector import AnomalyDetector
 from src.insights.daemon_detector import DaemonDetector
@@ -90,6 +92,15 @@ def _get_pipeline():
     if _pipeline is None:
         _pipeline = _build_pipeline(_config)
     return _pipeline
+
+
+# ---------------------------------------------------------------------------
+# Signal request model
+# ---------------------------------------------------------------------------
+
+
+class SignalRequest(BaseModel):
+    signal: str  # "SIGTERM" or "SIGKILL"
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +218,86 @@ _HTML_TEMPLATE = """\
     tr.zombie td.insight, tr.high-cpu td.insight,
     tr.high-mem td.insight {{ color: inherit; }}
 
+    /* Kill button */
+    .kill-btn {{
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 1rem;
+      padding: 1px 6px;
+      transition: border-color 0.15s, color 0.15s;
+    }}
+    .kill-btn:hover {{ border-color: var(--red); color: var(--red); }}
+
+    /* Modal overlay */
+    #kill-modal {{
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }}
+    #kill-modal.open {{ display: flex; }}
+    .modal-box {{
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px 28px;
+      min-width: 360px;
+      max-width: 480px;
+      width: 100%;
+    }}
+    .modal-box h2 {{ color: var(--accent); margin-bottom: 4px; }}
+    .modal-box .meta {{ color: var(--muted); font-size: 0.8rem; margin-bottom: 12px; }}
+    .modal-box .banner {{
+      border-radius: 4px;
+      padding: 8px 12px;
+      margin-bottom: 12px;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }}
+    .banner.danger {{ background: rgba(248,81,73,0.15); border: 1px solid var(--red); color: var(--red); }}
+    .banner.warn   {{ background: rgba(227,179,65,0.15); border: 1px solid var(--yellow); color: var(--yellow); }}
+    .modal-actions {{ display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }}
+    .btn {{
+      border: none; border-radius: 4px; cursor: pointer;
+      font-family: inherit; font-size: 0.82rem;
+      padding: 6px 14px; font-weight: 600;
+    }}
+    .btn-term  {{ background: var(--green);  color: #000; }}
+    .btn-kill  {{ background: var(--red);    color: #fff; }}
+    .btn-cancel{{ background: var(--surface); border: 1px solid var(--border); color: var(--muted); }}
+    .confirm-wrap {{ margin-top: 12px; display: none; }}
+    .confirm-wrap label {{ display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 4px; }}
+    .confirm-wrap input {{
+      width: 100%; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-family: inherit;
+      font-size: 0.82rem; padding: 5px 8px;
+    }}
+
+    /* Toast */
+    #toast {{
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 18px;
+      font-size: 0.82rem;
+      z-index: 200;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+    }}
+    #toast.show {{ opacity: 1; }}
+    #toast.success {{ border-color: var(--green); color: var(--green); }}
+    #toast.error   {{ border-color: var(--red);   color: var(--red);   }}
+
     footer {{
       text-align: center;
       padding: 10px;
@@ -243,13 +334,40 @@ _HTML_TEMPLATE = """\
           <th style="text-align:right">Mem %</th>
           <th>Status</th>
           <th>Insight</th>
+          <th>Action</th>
         </tr>
       </thead>
       <tbody id="proc-body">
-        <tr><td colspan="6" style="color:var(--muted);text-align:center;padding:20px">Loading…</td></tr>
+        <tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">Loading…</td></tr>
       </tbody>
     </table>
   </div>
+
+  <!-- Kill modal -->
+  <div id="kill-modal">
+    <div class="modal-box">
+      <h2 id="m-name">—</h2>
+      <div class="meta" id="m-meta">—</div>
+      <div id="m-banner-risk"  class="banner danger" style="display:none">⚠ WARNING: This appears to be a system/privileged process. Killing it may destabilise your system.</div>
+      <div id="m-banner-zombie" class="banner warn"  style="display:none">⚠ Zombie process — signal the parent instead.</div>
+      <div class="modal-actions">
+        <button class="btn btn-term"   id="btn-sigterm"  onclick="doSignal('SIGTERM')">Send SIGTERM</button>
+        <button class="btn btn-kill"   id="btn-sigkill"  onclick="initKill()">Force Kill SIGKILL</button>
+        <button class="btn btn-cancel" onclick="closeModal()">Cancel</button>
+      </div>
+      <div class="confirm-wrap" id="confirm-wrap">
+        <label id="confirm-label">Type process name to confirm:</label>
+        <input id="confirm-input" type="text" placeholder="" />
+        <div class="modal-actions" style="margin-top:8px">
+          <button class="btn btn-kill" onclick="doSignal('SIGKILL')">Confirm SIGKILL</button>
+          <button class="btn btn-cancel" onclick="cancelKill()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast"></div>
 
   <footer>SignalScope — real-time process monitor &nbsp;|&nbsp; Press Ctrl+C in terminal to stop the server</footer>
 
@@ -257,6 +375,7 @@ _HTML_TEMPLATE = """\
     const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
     const wsUrl   = `${{wsProto}}://${{location.host}}/ws`;
     let ws, retryDelay = 1000;
+    let _modalPid = null, _modalName = null;
 
     function connect() {{
       ws = new WebSocket(wsUrl);
@@ -310,18 +429,19 @@ _HTML_TEMPLATE = """\
     function renderTable(procs) {{
       const tbody = document.getElementById('proc-body');
       if (!procs.length) {{
-        tbody.innerHTML = '<tr><td colspan="6" style="color:var(--muted);text-align:center;padding:20px">No processes found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">No processes found</td></tr>';
         return;
       }}
       tbody.innerHTML = procs.map(p => {{
         const cls = rowClass(p);
-        return `<tr class="${{cls}}">
+        return `<tr class="${{cls}}" id="row-${{p.pid}}">
           <td style="text-align:right">${{p.pid}}</td>
           <td>${{esc(p.name)}}</td>
           <td style="text-align:right">${{p.cpu_percent.toFixed(1)}}</td>
           <td style="text-align:right">${{p.memory_percent.toFixed(2)}}</td>
           <td>${{esc(p.status)}}</td>
           <td class="insight">${{esc(p.insight_text)}}</td>
+          <td><button class="kill-btn" data-pid="${{p.pid}}" data-name="${{esc(p.name)}}" onclick="openModal(this)">⚡</button></td>
         </tr>`;
       }}).join('');
     }}
@@ -331,6 +451,100 @@ _HTML_TEMPLATE = """\
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
+    }}
+
+    async function openModal(btn) {{
+      const pid  = btn.getAttribute('data-pid');
+      const name = btn.getAttribute('data-name');
+      _modalPid  = pid;
+      _modalName = name;
+
+      document.getElementById('m-name').textContent = name;
+      document.getElementById('m-meta').textContent = 'PID ' + pid + ' — loading…';
+      document.getElementById('m-banner-risk').style.display  = 'none';
+      document.getElementById('m-banner-zombie').style.display = 'none';
+      document.getElementById('confirm-wrap').style.display   = 'none';
+      document.getElementById('confirm-input').value = '';
+      document.getElementById('kill-modal').className = 'open';
+
+      try {{
+        const resp = await fetch('/api/process/' + pid + '/info');
+        if (!resp.ok) {{
+          document.getElementById('m-meta').textContent = 'PID ' + pid + ' (process gone)';
+          return;
+        }}
+        const info = await resp.json();
+        document.getElementById('m-meta').textContent =
+          'PID ' + pid +
+          ' | CPU: ' + (info.cpu_percent || 0).toFixed(1) + '%' +
+          ' | Mem: ' + (info.memory_percent || 0).toFixed(2) + '%' +
+          (info.insight_text && info.insight_text !== '—' ? ' | ' + info.insight_text : '');
+        if (info.is_zombie) {{
+          document.getElementById('m-banner-zombie').style.display = 'block';
+        }}
+        if (info.high_risk) {{
+          document.getElementById('m-banner-risk').style.display = 'block';
+        }}
+      }} catch(e) {{
+        document.getElementById('m-meta').textContent = 'PID ' + pid;
+      }}
+    }}
+
+    function closeModal() {{
+      document.getElementById('kill-modal').className = '';
+      _modalPid = null; _modalName = null;
+    }}
+
+    function initKill() {{
+      const wrap = document.getElementById('confirm-wrap');
+      wrap.style.display = 'block';
+      document.getElementById('confirm-label').textContent = "Type process name '" + _modalName + "' to confirm:";
+      document.getElementById('confirm-input').placeholder = _modalName;
+      document.getElementById('confirm-input').focus();
+    }}
+
+    function cancelKill() {{
+      document.getElementById('confirm-wrap').style.display = 'none';
+      document.getElementById('confirm-input').value = '';
+    }}
+
+    async function doSignal(sig) {{
+      if (sig === 'SIGKILL') {{
+        const typed = document.getElementById('confirm-input').value.trim();
+        if (typed !== _modalName) {{
+          showToast('Confirmation failed — action cancelled.', 'error');
+          closeModal();
+          return;
+        }}
+      }}
+      const pid = _modalPid, name = _modalName;
+      closeModal();
+      try {{
+        const resp = await fetch('/api/process/' + pid + '/signal', {{
+          method: 'POST',
+          headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify({{signal: sig}})
+        }});
+        const data = await resp.json();
+        if (resp.ok && data.success) {{
+          showToast('PID ' + pid + ' (' + name + ') terminated successfully.', 'success');
+          const row = document.getElementById('row-' + pid);
+          if (row) row.style.opacity = '0.3';
+        }} else {{
+          showToast(data.message || 'Signal failed.', 'error');
+        }}
+      }} catch(e) {{
+        showToast('Request failed: ' + e, 'error');
+      }}
+    }}
+
+    let _toastTimer = null;
+    function showToast(msg, type) {{
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = 'show ' + (type || '');
+      if (_toastTimer) clearTimeout(_toastTimer);
+      _toastTimer = setTimeout(() => {{ el.className = ''; }}, 3000);
     }}
 
     connect();
@@ -355,6 +569,63 @@ async def index():
 async def health():
     """Simple health-check endpoint."""
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Process action endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/api/process/{pid}/signal")
+async def signal_process(pid: int, req: SignalRequest):
+    """Send SIGTERM or SIGKILL to a process and return the ActionResult."""
+    if req.signal not in ("SIGTERM", "SIGKILL"):
+        raise HTTPException(status_code=422, detail="signal must be 'SIGTERM' or 'SIGKILL'")
+    killer = ProcessKiller()
+    if req.signal == "SIGTERM":
+        result = await asyncio.get_event_loop().run_in_executor(None, killer.send_sigterm, pid)
+    else:
+        result = await asyncio.get_event_loop().run_in_executor(None, killer.send_sigkill, pid)
+    return {
+        "pid": result.pid,
+        "signal_sent": result.signal_sent,
+        "success": result.success,
+        "message": result.message,
+        "timestamp": result.timestamp,
+        "high_risk": result.high_risk,
+        "process_name": result.process_name,
+    }
+
+
+@app.get("/api/process/{pid}/info")
+async def process_info(pid: int):
+    """Return current snapshot info for a single PID."""
+    if not psutil.pid_exists(pid):
+        raise HTTPException(status_code=404, detail=f"PID {pid} not found")
+    try:
+        p = psutil.Process(pid)
+        info = p.as_dict(attrs=["pid", "name", "cpu_percent", "memory_percent",
+                                 "status", "ppid", "uids", "terminal", "create_time"])
+        is_zombie = info.get("status") == "zombie"
+        # High-risk heuristic (mirrors ProcessKiller._is_high_risk)
+        high_risk = False
+        uids = info.get("uids")
+        if uids and uids.real == 0:
+            high_risk = True
+        elif not info.get("terminal") and (time.time() - (info.get("create_time") or time.time())) > 3600:
+            high_risk = True
+        return {
+            "pid": info.get("pid"),
+            "name": info.get("name", ""),
+            "cpu_percent": info.get("cpu_percent", 0.0),
+            "memory_percent": info.get("memory_percent", 0.0),
+            "status": info.get("status", ""),
+            "ppid": info.get("ppid"),
+            "is_zombie": is_zombie,
+            "high_risk": high_risk,
+            "insight_text": "—",
+        }
+    except psutil.NoSuchProcess:
+        raise HTTPException(status_code=404, detail=f"PID {pid} not found")
 
 
 @app.websocket("/ws")
