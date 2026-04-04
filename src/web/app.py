@@ -1131,7 +1131,7 @@ async def agent_signal_endpoint(request: Request):
     agent_secret = _config.get("agent_secret", "")
     if agent_secret:
         incoming = request.headers.get("X-Agent-Secret", "")
-        if not secrets.compare_digest(agent_secret.encode(), incoming.encode()):
+        if not incoming or not secrets.compare_digest(agent_secret.encode(), incoming.encode()):
             raise HTTPException(status_code=403, detail="Invalid agent secret")
     body = await request.json()
     pid = body.get("pid")
